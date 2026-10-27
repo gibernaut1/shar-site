@@ -24,16 +24,55 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:0
 let PEOPLE=[]; const $=id=>document.getElementById(id); const excel=$('excel'),queries=$('queries'),peopleBox=$('peopleBox'),statusBox=$('status'),results=$('results');
 const aliases={fio:['фио','пиб','піб','full name','fullname'],surname:['фамилия','прізвище','surname','last name','lastname'],name:['имя','ім\'я','ім’я','first name','firstname','given name'],patronymic:['отчество','по батькові','patronymic','middle name','middlename']};
 function norm(v){return String(v??'').trim().toLowerCase().replace(/ё/g,'е').replace(/’|`/g,"'").replace(/\s+/g,' ')}
-function toks(v){return norm(v).match(/[^\W\d_]+(?:[-'][^\W\d_]+)*/gu)||[]}
-function parsePerson(v){const raw=String(v??'').trim();const a=raw.match(/[^\W\d_]+(?:[-'][^\W\d_]+)*/gu)||[];const n=toks(v);return{surname:n[0]||'',name:n[1]||'',patronymic:n[2]||'',ds:a[0]||'',dn:a[1]||'',dp:a[2]||''}}
+function toks(v){return norm(v).match(/[\p{L}]+(?:[-'][\p{L}]+)*/gu)||[]}
+function parsePerson(v){const raw=String(v??'').trim();const a=raw.match(/[\p{L}]+(?:[-'][\p{L}]+)*/gu)||[];const n=toks(v);return{surname:n[0]||'',name:n[1]||'',patronymic:n[2]||'',ds:a[0]||'',dn:a[1]||'',dp:a[2]||''}}
 function disp(p){return [p.ds||p.surname,p.dn||p.name,p.dp||p.patronymic].filter(Boolean).join(' ')}
 function findHeader(cols,kind){const aa=aliases[kind].map(norm);for(const c of cols){if(aa.includes(norm(c)))return c}for(const c of cols){const x=norm(c);if(aa.some(a=>a.length>=3&&x.includes(a)))return c}return null}
-function rowsToPeople(rows){if(!rows.length)return[];const cols=Object.keys(rows[0]||{});const s=findHeader(cols,'surname'),n=findHeader(cols,'name'),p=findHeader(cols,'patronymic');let out=[];if(s&&n){for(const r of rows){if(r[s]!=null&&String(r[s]).trim()){out.push({surname:norm(r[s]),name:norm(r[n]),patronymic:p?norm(r[p]):'',ds:String(r[s]).trim(),dn:r[n]==null?'':String(r[n]).trim(),dp:p&&r[p]!=null?String(r[p]).trim():''})}}return out}
-let best=null,score=-1;for(const c of cols){const vals=rows.slice(0,250).map(r=>r[c]).filter(v=>v!=null&&String(v).trim());if(!vals.length)continue;const sc=vals.filter(v=>toks(v).length>=2).length/vals.length;if(sc>score){score=sc;best=c}}if(score<.35)return[];for(const r of rows){if(r[best]!=null){const q=parsePerson(r[best]);if(q.surname)out.push(q)}}return out}
-async function readWorkbook(file){const buf=await file.arrayBuffer();const wb=XLSX.read(buf,{type:'array'});let out=[];for(const s of wb.SheetNames){const rows=XLSX.utils.sheet_to_json(wb.Sheets[s],{defval:''});out=out.concat(rowsToPeople(rows))}return out}
+function cellText(v){return String(v??'').trim()}
+function looksLikeFullName(v){const a=toks(v);if(a.length<2||a.length>4)return false;return a.every(x=>x.length>=1)&&a.some(x=>x.length>1)}
+function matrixToPeople(rows){if(!rows.length)return[];const width=Math.max(...rows.map(r=>r.length),0);let out=[];
+let header=-1, sCol=-1,nCol=-1,pCol=-1,fCol=-1;
+for(let i=0;i<Math.min(rows.length,40);i++){
+  const vals=Array.from({length:width},(_,j)=>cellText(rows[i][j]));
+  for(let j=0;j<vals.length;j++){
+    const x=norm(vals[j]);
+    if(aliases.fio.map(norm).includes(x)||aliases.fio.some(a=>norm(a).length>=3&&x.includes(norm(a))))fCol=j;
+    if(aliases.surname.map(norm).includes(x)||aliases.surname.some(a=>norm(a).length>=3&&x.includes(norm(a))))sCol=j;
+    if(aliases.name.map(norm).includes(x)||aliases.name.some(a=>norm(a).length>=3&&x.includes(norm(a))))nCol=j;
+    if(aliases.patronymic.map(norm).includes(x)||aliases.patronymic.some(a=>norm(a).length>=3&&x.includes(norm(a))))pCol=j;
+  }
+  if(fCol>=0||(sCol>=0&&nCol>=0)){header=i;break}
+}
+if(header>=0){
+  for(let i=header+1;i<rows.length;i++){
+    const r=rows[i];
+    if(fCol>=0){const v=cellText(r[fCol]);if(looksLikeFullName(v)){const q=parsePerson(v);if(q.surname)out.push(q)}}
+    else {const sv=cellText(r[sCol]),nv=cellText(r[nCol]),pv=pCol>=0?cellText(r[pCol]):'';if(sv&&nv){out.push({surname:norm(sv),name:norm(nv),patronymic:norm(pv),ds:sv,dn:nv,dp:pv})}}
+  }
+  if(out.length)return out
+}
+let bestCol=-1,bestScore=-1;
+for(let j=0;j<width;j++){
+  const vals=rows.map(r=>cellText(r[j])).filter(Boolean);
+  if(vals.length<2)continue;
+  const good=vals.filter(looksLikeFullName).length;
+  const score=good/vals.length;
+  if(good>=2&&score>bestScore){bestScore=score;bestCol=j}
+}
+if(bestCol>=0&&bestScore>=0.25){
+  for(const r of rows){const v=cellText(r[bestCol]);if(looksLikeFullName(v)){const q=parsePerson(v);if(q.surname)out.push(q)}}
+  if(out.length)return out
+}
+for(const r of rows){
+  let found='';
+  for(const v of r){if(looksLikeFullName(v)){found=cellText(v);break}}
+  if(found){const q=parsePerson(found);if(q.surname)out.push(q)}
+}
+return out}
+async function readWorkbook(file){const buf=await file.arrayBuffer();const wb=XLSX.read(buf,{type:'array'});let out=[];for(const s of wb.SheetNames){const rows=XLSX.utils.sheet_to_json(wb.Sheets[s],{header:1,defval:'',blankrows:false,raw:false});out=out.concat(matrixToPeople(rows))}return out}
 function tokenMatch(q,c){if(!q)return true;if(!c)return false;return q.length===1?c.startsWith(q):q===c}
 function matchOne(qtxt){const q=parsePerson(qtxt);if(!q.surname)return[];const m=new Map();for(const p of PEOPLE){const k=[p.surname,p.name,p.patronymic].join('|');if(!m.has(k))m.set(k,{p,count:0});m.get(k).count++}let cand=[];for(const {p,count} of m.values()){if(p.surname===q.surname&&tokenMatch(q.name,p.name)&&tokenMatch(q.patronymic,p.patronymic))cand.push({p,count})}if(!cand.length)return[];const fn=q.name&&q.name.length>1,fp=q.patronymic&&q.patronymic.length>1,ini=q.name&&q.name.length===1,inp=q.patronymic&&q.patronymic.length===1;return cand.map(x=>({found:disp(x.p),count:x.count,status:fn&&fp?'Точний збіг':ini&&inp?(cand.length===1?'Впевнено: прізвище + ініціали':'Неоднозначно'):(cand.length===1?'Імовірний варіант':'Неоднозначно')}))}
-excel.onchange=async()=>{statusBox.className='status';if(!excel.files[0])return;try{PEOPLE=await readWorkbook(excel.files[0]);peopleBox.innerHTML='';for(const p of PEOPLE){const d=document.createElement('div');d.className='person';d.textContent=disp(p);d.onclick=()=>queries.value+=(queries.value.trim()?'\n':'')+d.textContent;peopleBox.appendChild(d)}$('fileInfo').textContent=`${excel.files[0].name} — записів: ${PEOPLE.length}`;statusBox.textContent='Excel прочитано.'}catch(e){statusBox.className='status error';statusBox.textContent='Не вдалося прочитати Excel: '+e.message}}
+excel.onchange=async()=>{statusBox.className='status';if(!excel.files[0])return;try{PEOPLE=await readWorkbook(excel.files[0]);peopleBox.innerHTML='';if(!PEOPLE.length){peopleBox.innerHTML='<div class="person">ПІБ у файлі не знайдено</div>';statusBox.className='status error';statusBox.textContent='Excel відкрито, але ПІБ не знайдено. Перевірте структуру файлу.'}else{for(const p of PEOPLE){const d=document.createElement('div');d.className='person';d.textContent=disp(p);d.onclick=()=>queries.value+=(queries.value.trim()?'\n':'')+d.textContent;peopleBox.appendChild(d)}statusBox.textContent='Excel прочитано.'}$('fileInfo').textContent=`${excel.files[0].name} — записів: ${PEOPLE.length}`}catch(e){statusBox.className='status error';statusBox.textContent='Не вдалося прочитати Excel: '+e.message}}
 $('loadList').onclick=async()=>{const f=$('queryFile').files[0];if(!f){statusBox.className='status error';statusBox.textContent='Виберіть файл зі списком.';return}try{const ext=f.name.toLowerCase().split('.').pop();let lines=[];if(ext==='txt'||ext==='csv'){const t=await f.text();lines=t.split(/\r?\n/).map(x=>x.trim()).filter(Boolean)}else{const buf=await f.arrayBuffer();const wb=XLSX.read(buf,{type:'array'});for(const s of wb.SheetNames){const a=XLSX.utils.sheet_to_json(wb.Sheets[s],{header:1,defval:''});for(const r of a){const v=r.find(x=>String(x).trim());if(v)lines.push(String(v).trim())}}}queries.value=lines.join('\n');statusBox.className='status';statusBox.textContent=`Завантажено: ${lines.length}` }catch(e){statusBox.className='status error';statusBox.textContent=e.message}}
 $('start').onclick=()=>{results.innerHTML='';if(!PEOPLE.length){statusBox.className='status error';statusBox.textContent='Спочатку виберіть Excel.';return}const qs=queries.value.split(/\r?\n/).map(x=>x.trim()).filter(Boolean);let n=1;for(const q of qs){const mm=matchOne(q);if(!mm.length){results.insertAdjacentHTML('beforeend',`<tr><td>${n++}</td><td>${q}</td><td></td><td>0</td><td>Не знайдено</td></tr>`)}else{for(const r of mm){results.insertAdjacentHTML('beforeend',`<tr><td>${n++}</td><td>${q}</td><td>${r.found}</td><td>${r.count}</td><td>${r.status}</td></tr>`)}}}statusBox.className='status';statusBox.textContent=`Готово. Рядків результату: ${n-1}`}
 if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js');
